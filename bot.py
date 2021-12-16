@@ -11,16 +11,18 @@ from binance.enums import *
 from config import *
 
 class Bot:
-
     def __init__(self):
+        #intialize client from binance api
+        self.client = Client(BINANCE_API_KEY, BINANCE_API_SECRET_KEY, tld='us')
         # data structures to track ohlcv
         self.opens = deque()
         self.closes = deque()
         self.highs = deque()
         self.lows = deque()
         self.volumes = deque()
-        # track indicators between bars
-        self.macds = deque([1, 2, 3]) # filled at beginning so I can append and pop on each iteration. Minimizaes conditinals
+        # track previous indicator values for slope calculation
+        self.macds = deque()
+        # track position stats
         self.position_atr = None
         self.time_since_upped_ubband = -1 # < 0 means hasn't crossed. >= 0 represents time since last crossed upper bband
         self.time_since_dipped_lbband = -1 # < 0 means hasn't crossed. >= 0 represents time since last crossed lower bband
@@ -34,8 +36,28 @@ class Bot:
         self.initialize()
     
     def initialize(self):
-        pass
+        # TODO:
         # get historical klines and calculate previous indicators
+        # loads historical into variables so no delay when starting program
+        for kline in self.client.get_historical_klines_generator(
+            "ETHUSD", 
+            Client.KLINE_INTERVAL_1MINUTE, 
+            str(datetime.datetime.utcnow() - datetime.timedelta(minutes=101)) # import 101 bc we pop most recent unclosed candle 
+            ):
+            self.opens.append(float(kline[1]))
+            self.closes.append(float(kline[4]))
+            self.highs.append(float(kline[2]))
+            self.lows.append(float(kline[3]))
+            self.volumes.append(float(kline[5]))
+        # deletes most recent candle which isn't yet closed
+        self.closes.pop() 
+        # calculates macds and adds them to attributes for slope calcs 
+        np_closes = numpy.array(self.closes)
+        macd_list, macdsignal_list, macdhist_list = talib.MACD(np_closes, fastperiod=12, slowperiod=26, signalperiod=9)
+        for i in range(-3, 0):
+            macdhist = macdhist_list[i]
+            self.macds.append(macdhist)
+    
 
     def process_bar(self, bar):
         """
