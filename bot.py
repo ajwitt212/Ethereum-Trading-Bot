@@ -22,7 +22,7 @@ class Bot:
         self.lows = deque()
         self.volumes = deque()
         # track previous indicator values for slope calculation
-        self.macds = deque()
+        self.macd_hists = deque()
         # track position stats
         self.position_atr = None
         self.time_since_upped_ubband = -1 # < 0 means hasn't crossed. >= 0 represents time since last crossed upper bband
@@ -58,7 +58,7 @@ class Bot:
         macd_list, macdsignal_list, macdhist_list = talib.MACD(np_closes, fastperiod=12, slowperiod=26, signalperiod=9)
         for i in range(-2, 0):
             macdhist = macdhist_list[i]
-            self.macds.append(macdhist)
+            self.macd_hists.append(macdhist)
     
     def process_bar(self, bar):
         """
@@ -91,15 +91,38 @@ class Bot:
         # getting macd info
         macd_list, macdsignal_list, macdhist_list = talib.MACD(np_closes, fastperiod=12, slowperiod=26, signalperiod=9)
         macd, macdsignal, macdhist = macd_list[-1], macdsignal_list[-1], macdhist_list[-1] # note: correct only to hundredths decimal place
-        self.macds.append(macdhist)
-        macdhist_slope = self.calc_slope(self.macds)
-        
+        self.macd_hists.append(macdhist)
+        macdhist_slope = self.calc_slope(self.macd_hists)
+
+        # comparing indicator values for inter-bar analysis
+        if bar_closed:
+            if self.lows[-1] < lower_bband:
+                self.time_since_dipped_lbband = 0
+            elif self.time_since_dipped_lbband > 0:
+                self.time_since_dipped_lbband += 1
+
+            if self.highs[-1] > upper_bband: # if we just upped set to 0
+                self.time_since_upped_ubband = 0
+            elif self.time_since_upped_ubband > 0: # if we've upped before increase time
+                self.time_since_upped_ubband += 1
+
+        if self.position_high != None: # if we are in position
+            # comparing indicators for inter-bar position analysis
+            if rsi > 69:
+                self.has_upped_rsi = True
+            if mfi > 79:
+                self.has_upped_mfi = True
+            if self.position_high is not None and self.highs[-1] > self.position_high:
+                self.position_high = self.highs[-1]
+
+        else: # if we aren't in position
+            pass
 
         # bar processing finalization
         self.num_bars_processed += 1 
         # if bar closed keep new val as permanent and del oldest val, else we remove newest val 
         self.pop_oldest_bar() if bar_closed else self.pop_newest_bar() 
-        self.macds.popleft() if bar_closed else self.macds.pop()
+        self.macd_hists.popleft() if bar_closed else self.macd_hists.pop()
         print('-', self.num_bars_processed, '-')
 
     def buy(self, quantity):
@@ -177,8 +200,6 @@ class Bot:
         """
         self.has_upped_rsi = False
         self.has_upped_mfi = False
-        self.time_since_upped_ubband = -1
-        self.time_since_dipped_lbband = -1
 
         if side == 'buy':  # only reset all indicators if we're closing a position
             return
