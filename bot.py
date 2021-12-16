@@ -82,6 +82,9 @@ class Bot:
         # getting atr info
         atr_list = talib.ATR(np_highs, np_lows, np_closes)
         atr = atr_list[-1]
+        # getting mfi info
+        mfi = talib.MFI(np_highs, np_lows, np_closes, np_volumes, timeperiod=14)
+        mfi = mfi[-1]
         # getting bbands info
         upper_bband_list, middle_bband_list, lower_bband_list = talib.BBANDS(np_closes, timeperiod=20)
         upper_bband, middle_bband, lower_bband = upper_bband_list[-1], middle_bband_list[-1], lower_bband_list[-1]
