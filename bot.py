@@ -11,9 +11,6 @@ from binance.enums import *
 
 from config import *
 
-#TODO: figure out how to stream ethusd NOT ethusdt
-#       or figure out how to buy and eth and instead of sell convert to usdt
-
 class Bot:
     def __init__(self):
         #intialize client from binance api
@@ -59,7 +56,7 @@ class Bot:
         # calculates macds and adds them to attributes for slope calcs 
         np_closes = numpy.array(self.closes)
         macd_list, macdsignal_list, macdhist_list = talib.MACD(np_closes, fastperiod=12, slowperiod=26, signalperiod=9)
-        for i in range(-3, 0):
+        for i in range(-2, 0):
             macdhist = macdhist_list[i]
             self.macds.append(macdhist)
     
@@ -70,9 +67,9 @@ class Bot:
         Args:
             bar (dict): binance kline bar see binance api for more details
         """
-        print('-', self.num_bars_processed, '-')
         # bar processing initialization
         self.append_bar(bar)
+        bar_closed = bar['x']
         # convert stored stock values to numpy arrays for ta-lib processing
         np_opens = numpy.array(self.opens)
         np_closes = numpy.array(self.closes)
@@ -92,15 +89,15 @@ class Bot:
         macd_list, macdsignal_list, macdhist_list = talib.MACD(np_closes, fastperiod=12, slowperiod=26, signalperiod=9)
         macd, macdsignal, macdhist = macd_list[-1], macdsignal_list[-1], macdhist_list[-1] # note: correct only to hundredths decimal place
         self.macds.append(macdhist)
-        self.macds.popleft()
+        macdhist_slope = self.calc_slope(self.macds)
+        
 
         # bar processing finalization
-        self.num_bars_processed += 1
-        bar_closed = bar['x']  
-        if bar_closed: # if the bar is closed we add it on the list as permanent
-            self.pop_oldest_bar()
-        else: # if the bar isn't closed we remove it and process the next live valu
-            self.pop_newest_bar()
+        self.num_bars_processed += 1 
+        # if bar closed keep new val as permanent and del oldest val, else we remove newest val 
+        self.pop_oldest_bar() if bar_closed else self.pop_newest_bar() 
+        self.macds.popleft() if bar_closed else self.macds.pop()
+        print('-', self.num_bars_processed, '-')
 
     def buy(self, quantity):
         """
@@ -114,6 +111,7 @@ class Bot:
                 symbol='ETHUSD',
                 quantity=quantity
             )
+        return order
     
     def liquidate(self):
         """
@@ -132,6 +130,7 @@ class Bot:
                 symbol='ETHUSD',
                 quantity=eth_pos
         )
+        return order
     
     def append_bar(self, bar):
         """
@@ -140,7 +139,6 @@ class Bot:
         Args:
             bar (dict): binance kline bar see binance api for more details
         """
-        #TODO: check why value isn't lining up with website for closes
         self.opens.append(float(bar['o']))
         self.closes.append(float(bar['c']))
         self.highs.append(float(bar['h']))
@@ -187,6 +185,11 @@ class Bot:
         self.position_high = None
         self.position_atr = None
     
+    def calc_slope(self, indicator_vals):
+        x_vals = numpy.array(range(0, len(indicator_vals)))
+        y_vals = numpy.array(indicator_vals)
+        slope, y_int = numpy.polyfit(x_vals, y_vals, 1)
+        return slope
 
 def on_open(ws):
     print("\n### connection opened ###\n")
