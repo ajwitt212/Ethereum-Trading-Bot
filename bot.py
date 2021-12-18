@@ -23,18 +23,17 @@ class Bot:
         self.highs = deque()
         self.lows = deque()
         self.volumes = deque()
-        # track previous indicator values for slope calculation
-        self.macd_hists = deque()
-        # track position stats
+        # track indicator values between bars
         self.min_since_upped_ubband = 100 # start high enough where its irrelevant
         self.min_since_dipped_lbband = 100 
         self.has_upped_rsi = False
         self.has_upped_mfi = False
+        self.macd_hists = deque()
+        # track position values
         self.position_atr = None
         self.position_high_price = None
         self.position_enter_price = None
         self.position_minutes = 0
-        
         # track program statistics
         self.num_bars_processed = 0
         # get historical klines and calculate previous indicators
@@ -94,7 +93,7 @@ class Bot:
         mfi = mfi[-1]
         # getting bbands info
         # TODO: swinging too much with live data, works with historical data
-        upper_bband_list, middle_bband_list, lower_bband_list = talib.BBANDS(np_closes, timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
+        upper_bband_list, middle_bband_list, lower_bband_list = talib.BBANDS(np_closes, timeperiod=20, nbdevup=1.95, nbdevdn=1.95, matype=0)
         upper_bband, middle_bband, lower_bband = upper_bband_list[-1], middle_bband_list[-1], lower_bband_list[-1]
         # getting macd info
         macd_list, macdsignal_list, macdhist_list = talib.MACD(np_closes, fastperiod=12, slowperiod=26, signalperiod=9)
@@ -125,26 +124,23 @@ class Bot:
             if self.position_high_price is not None and self.highs[-1] > self.position_high_price:
                 self.position_high_price = self.highs[-1]
             # checking sell conditions
-            if True: # macdhist_slope < 0.075:
-                # Take Profit: rsi too high and came back down
-                if ((self.has_upped_rsi and rsi < 69) or  
+            # Take Profit: rsi too high and came back down
+            if ((self.has_upped_rsi and rsi < 69) or  
                 # Take Profit: mfi too high and came back down
                 (self.has_upped_mfi and mfi < 79) or
                 # Stop Loss: closing price too low (relative)
-                (self.closes[-1] <= self.position_enter_price - 0.5*self.position_atr) or
-                # Stop Loss: avg price too low (relative)
-                (avg_price <= self.position_enter_price - .75*self.position_atr) or
+                (avg_price <= self.position_enter_price - 0.5*self.position_atr) or
                 # Take Profit: crossed ubband and is too low
                 (self.min_since_upped_ubband <= self.position_minutes and avg_price < upper_bband and avg_price <= self.position_high_price - .85*self.position_atr) or
-                # Stop Loss: hasn't crossed ubband so allow lots of movement
+                # hasn't crossed ubband so allow lots of movement
                 (self.min_since_upped_ubband > self.position_minutes and avg_price <= self.position_high_price - 3*self.position_atr) or
                 # Take Profit: 2*atr and dropped ever so slightly
                 (self.position_high_price >= self.position_enter_price + 1.5*self.position_atr and self.closes[-1] < self.position_high_price - 0.3*self.position_atr)):
-                    self.liquidate()
-                    self.reset_position_trackers()
+                self.liquidate()
+                self.reset_position_trackers()
 
         else: # if we aren't in position
-            if rsi < 50 and mfi < 50 and self.closes[-1] > lower_bband and self.min_since_dipped_lbband <= 7 and macdhist_slope > -0.05:
+            if rsi < 50 and mfi < 50 and self.closes[-1] > lower_bband and self.min_since_dipped_lbband <= 7 and -3 <= macdhist <= 1.5 and macdhist_slope > -0.05:
                 self.buy(quantity=.003)
                 self.position_high_price = self.position_enter_price
                 self.position_atr = atr
@@ -196,7 +192,6 @@ class Bot:
         money_diff = sell_price - self.position_enter_price
         print(f'- SOLD at price ({sell_price}) for change of: ${money_diff} -')
 
-        self.reset_position_trackers()
         return order
     
     def append_bar(self, bar):
