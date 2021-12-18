@@ -60,7 +60,7 @@ class Bot:
         # calculates historical macds and adds them to attributes for slope calcs 
         np_closes = numpy.array(self.closes)
         macd_list, macdsignal_list, macdhist_list = talib.MACD(np_closes, fastperiod=12, slowperiod=26, signalperiod=9)
-        for i in range(-2, 0):
+        for i in range(-3, 0):
             macdhist = macdhist_list[i]
             self.macd_hists.append(macdhist)
         
@@ -124,8 +124,11 @@ class Bot:
             if self.position_high_price is not None and self.highs[-1] > self.position_high_price:
                 self.position_high_price = self.highs[-1]
             # checking sell conditions
-            # Take Profit: rsi too high and came back down
-            if ((self.has_upped_rsi and rsi < 69) or  
+
+            if not (rsi < 50 and mfi < 50 and self.closes[-1] > lower_bband and self.min_since_dipped_lbband <= 7 and -3 <= macdhist <= 1.5 and macdhist_slope > -0.05): # not in a buy condition
+                if (
+                # Take Profit: rsi too high and came back down
+                (self.has_upped_rsi and rsi < 69) or  
                 # Take Profit: mfi too high and came back down
                 (self.has_upped_mfi and mfi < 79) or
                 # Stop Loss: closing price too low (relative)
@@ -136,12 +139,13 @@ class Bot:
                 (self.min_since_upped_ubband > self.position_minutes and avg_price <= self.position_high_price - 3*self.position_atr) or
                 # Take Profit: 2*atr and dropped ever so slightly
                 (self.position_high_price >= self.position_enter_price + 1.5*self.position_atr and self.closes[-1] < self.position_high_price - 0.3*self.position_atr)):
-                self.liquidate()
-                self.reset_position_trackers()
+                    self.liquidate()
+                    self.reset_position_trackers()
 
         else: # if we aren't in position
             if rsi < 50 and mfi < 50 and self.closes[-1] > lower_bband and self.min_since_dipped_lbband <= 7 and -3 <= macdhist <= 1.5 and macdhist_slope > -0.05:
                 self.buy(quantity=.003)
+                # updating position trackers
                 self.position_high_price = self.position_enter_price
                 self.position_atr = atr
 
