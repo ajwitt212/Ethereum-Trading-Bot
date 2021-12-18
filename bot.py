@@ -30,7 +30,6 @@ class Bot:
         self.has_upped_mfi = False
         self.macd_hists = deque()
         # track position values
-        self.position_atr = None
         self.position_high_price = None
         self.position_enter_price = None
         self.position_minutes = 0
@@ -131,14 +130,12 @@ class Bot:
                 (self.has_upped_rsi and rsi < 69) or  
                 # Take Profit: mfi too high and came back down
                 (self.has_upped_mfi and mfi < 79) or
-                # Stop Loss: closing price too low (relative)
-                (avg_price <= self.position_enter_price - 0.5*self.position_atr) or
+                # Stop Loss: avg price too low (relative)
+                (avg_price <= self.position_enter_price - 0.5*atr) or
                 # Take Profit: crossed ubband and is too low
-                (self.min_since_upped_ubband <= self.position_minutes and avg_price < upper_bband and avg_price <= self.position_high_price - .85*self.position_atr) or
-                # hasn't crossed ubband so allow lots of movement
-                (self.min_since_upped_ubband > self.position_minutes and avg_price <= self.position_high_price - 3*self.position_atr) or
+                (self.min_since_upped_ubband <= self.position_minutes and avg_price < upper_bband and avg_price <= self.position_high_price - .85*atr) or
                 # Take Profit: 2*atr and dropped ever so slightly
-                (self.position_high_price >= self.position_enter_price + 1.5*self.position_atr and self.closes[-1] < self.position_high_price - 0.3*self.position_atr)):
+                (self.position_high_price >= self.position_enter_price + 1.7*atr and self.closes[-1] < self.position_high_price - 0.5*atr)):
                     self.liquidate()
                     self.reset_position_trackers()
 
@@ -147,7 +144,6 @@ class Bot:
                 self.buy(quantity=.003)
                 # updating position trackers
                 self.position_high_price = self.position_enter_price
-                self.position_atr = atr
 
         # if bar closed keep new val as permanent and del oldest val, else we remove newest val 
         self.pop_oldest_bar() if bar_closed else self.pop_newest_bar() 
@@ -194,7 +190,8 @@ class Bot:
         
         sell_price = float(order['fills'][0]['price'])
         money_diff = sell_price - self.position_enter_price
-        print(f'- SOLD at price ({sell_price}) for change of: ${money_diff} -')
+        percentage_diff = "{:.3%}".format(money_diff / sell_price)
+        print(f'- SOLD at price ({sell_price}) for change of: ${money_diff} and {percentage_diff} -')
 
         return order
     
@@ -238,7 +235,6 @@ class Bot:
         self.has_upped_rsi = False
         self.has_upped_mfi = False        
         self.position_high_price = None
-        self.position_atr = None
         self.position_enter_price = None
         self.position_minutes = 0
     
@@ -261,7 +257,6 @@ def on_close(ws, close_status_code, close_msg):
 def on_message(ws, message):
     global eth_bot
     eth_bot.process_bar(json.loads(message)['k'])
-
 # declare bot object
 eth_bot = Bot()
 # runs websocket
