@@ -11,6 +11,8 @@ from binance.enums import *
 
 from config import *
 
+# TODO modularize initialize and process_bar code for calculating technical indicators and comparing them with stock prices
+
 class Bot:
     def __init__(self):
         #intialize client from binance api
@@ -24,12 +26,15 @@ class Bot:
         # track previous indicator values for slope calculation
         self.macd_hists = deque()
         # track position stats
-        self.position_atr = None
-        self.time_since_upped_ubband = -1 # < 0 means hasn't crossed. >= 0 represents time since last crossed upper bband
-        self.time_since_dipped_lbband = -1 # < 0 means hasn't crossed. >= 0 represents time since last crossed lower bband
+        self.min_since_upped_ubband = 100 # start high enough where its irrelevant
+        self.min_since_dipped_lbband = 100 
         self.has_upped_rsi = False
         self.has_upped_mfi = False
-        self.position_high = None
+        self.position_atr = None
+        self.position_high_price = None
+        self.position_enter_price = None
+        self.position_minutes = 0
+        
         # track program statistics
         self.num_bars_processed = 0
         # get historical klines and calculate previous indicators
@@ -44,7 +49,7 @@ class Bot:
         for kline in self.client.get_historical_klines(
             "ETHUSD", 
             Client.KLINE_INTERVAL_1MINUTE, 
-            str(datetime.datetime.utcnow() - datetime.timedelta(minutes=100)) # import 101 bc we pop most recent unclosed candle 
+            str(datetime.datetime.utcnow() - datetime.timedelta(minutes=101)) # import 101 bc we pop most recent unclosed candle 
             ):
             self.opens.append(float(kline[1]))
             self.closes.append(float(kline[4]))
@@ -53,12 +58,13 @@ class Bot:
             self.volumes.append(float(kline[5]))
         # deletes most recent candle which isn't yet closed
         self.pop_newest_bar()
-        # calculates macds and adds them to attributes for slope calcs 
+        # calculates historical macds and adds them to attributes for slope calcs 
         np_closes = numpy.array(self.closes)
         macd_list, macdsignal_list, macdhist_list = talib.MACD(np_closes, fastperiod=12, slowperiod=26, signalperiod=9)
         for i in range(-2, 0):
             macdhist = macdhist_list[i]
             self.macd_hists.append(macdhist)
+        
     
     def process_bar(self, bar):
         """
@@ -70,6 +76,7 @@ class Bot:
         # bar processing initialization
         self.append_bar(bar)
         bar_closed = bar['x']
+        avg_price = (self.highs[-1] + self.lows[-1] + self.closes[-1]) / 3.0
         # convert stored stock values to numpy arrays for ta-lib processing
         np_opens = numpy.array(self.opens)
         np_closes = numpy.array(self.closes)
@@ -86,44 +93,70 @@ class Bot:
         mfi = talib.MFI(np_highs, np_lows, np_closes, np_volumes, timeperiod=14)
         mfi = mfi[-1]
         # getting bbands info
-        upper_bband_list, middle_bband_list, lower_bband_list = talib.BBANDS(np_closes, timeperiod=20)
+        # TODO: swinging too much with live data, works with historical data
+        upper_bband_list, middle_bband_list, lower_bband_list = talib.BBANDS(np_closes, timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
         upper_bband, middle_bband, lower_bband = upper_bband_list[-1], middle_bband_list[-1], lower_bband_list[-1]
         # getting macd info
         macd_list, macdsignal_list, macdhist_list = talib.MACD(np_closes, fastperiod=12, slowperiod=26, signalperiod=9)
         macd, macdsignal, macdhist = macd_list[-1], macdsignal_list[-1], macdhist_list[-1] # note: correct only to hundredths decimal place
         self.macd_hists.append(macdhist)
         macdhist_slope = self.calc_slope(self.macd_hists)
-
         # comparing indicator values for inter-bar analysis
         if bar_closed:
             if self.lows[-1] < lower_bband:
-                self.time_since_dipped_lbband = 0
-            elif self.time_since_dipped_lbband > 0:
-                self.time_since_dipped_lbband += 1
+                self.min_since_dipped_lbband = 0 # if we just dipped set to 0
+            elif self.min_since_dipped_lbband >= 0:
+                self.min_since_dipped_lbband += 1 # if we've dipped before increase time
 
             if self.highs[-1] > upper_bband: # if we just upped set to 0
-                self.time_since_upped_ubband = 0
-            elif self.time_since_upped_ubband > 0: # if we've upped before increase time
-                self.time_since_upped_ubband += 1
+                self.min_since_upped_ubband = 0
+            elif self.min_since_upped_ubband >= 0: # if we've upped before increase time
+                self.min_since_upped_ubband += 1
 
-        if self.position_high != None: # if we are in position
+
+        if self.position_high_price != None: # if we are in position
+            if bar_closed:
+                self.position_minutes += 1
             # comparing indicators for inter-bar position analysis
             if rsi > 69:
                 self.has_upped_rsi = True
             if mfi > 79:
                 self.has_upped_mfi = True
-            if self.position_high is not None and self.highs[-1] > self.position_high:
-                self.position_high = self.highs[-1]
+            if self.position_high_price is not None and self.highs[-1] > self.position_high_price:
+                self.position_high_price = self.highs[-1]
+            # checking sell conditions
+            if True: # macdhist_slope < 0.075:
+                # Take Profit: rsi too high and came back down
+                if ((self.has_upped_rsi and rsi < 69) or  
+                # Take Profit: mfi too high and came back down
+                (self.has_upped_mfi and mfi < 79) or
+                # Stop Loss: closing price too low (relative)
+                (self.closes[-1] <= self.position_enter_price - 0.5*self.position_atr) or
+                # Stop Loss: avg price too low (relative)
+                (avg_price <= self.position_enter_price - .75*self.position_atr) or
+                # Take Profit: crossed ubband and is too low
+                (self.min_since_upped_ubband <= self.position_minutes and avg_price < upper_bband and avg_price <= self.position_high_price - .85*self.position_atr) or
+                # Stop Loss: hasn't crossed ubband so allow lots of movement
+                (self.min_since_upped_ubband > self.position_minutes and avg_price <= self.position_high_price - 3*self.position_atr) or
+                # Take Profit: 2*atr and dropped ever so slightly
+                (self.position_high_price >= self.position_enter_price + 1.5*self.position_atr and self.closes[-1] < self.position_high_price - 0.3*self.position_atr)):
+                    self.liquidate()
+                    self.reset_position_trackers()
 
         else: # if we aren't in position
-            pass
+            if rsi < 50 and mfi < 50 and self.closes[-1] > lower_bband and self.min_since_dipped_lbband <= 7 and macdhist_slope > -0.05:
+                self.buy(quantity=.003)
+                self.position_high_price = self.position_enter_price
+                self.position_atr = atr
 
-        # bar processing finalization
-        self.num_bars_processed += 1 
         # if bar closed keep new val as permanent and del oldest val, else we remove newest val 
         self.pop_oldest_bar() if bar_closed else self.pop_newest_bar() 
         self.macd_hists.popleft() if bar_closed else self.macd_hists.pop()
-        print('-', self.num_bars_processed, '-')
+
+        # bar processing finalization
+        if bar_closed:
+            self.num_bars_processed += 1 
+            print('-', self.num_bars_processed, '-')
 
     def buy(self, quantity):
         """
@@ -137,6 +170,8 @@ class Bot:
                 symbol='ETHUSD',
                 quantity=quantity
             )
+        self.position_enter_price = float(order['fills'][0]['price'])
+        print(f'- BOUGHT at price ({self.position_enter_price}) -')
         return order
     
     def liquidate(self):
@@ -156,6 +191,12 @@ class Bot:
                 symbol='ETHUSD',
                 quantity=eth_pos
         )
+        
+        sell_price = float(order['fills'][0]['price'])
+        money_diff = sell_price - self.position_enter_price
+        print(f'- SOLD at price ({sell_price}) for change of: ${money_diff} -')
+
+        self.reset_position_trackers()
         return order
     
     def append_bar(self, bar):
@@ -191,29 +232,23 @@ class Bot:
         self.lows.pop()
         self.volumes.pop()
 
-    def reset_indicators(self, side):
+    def reset_position_trackers(self):
         """ 
         Function to reset all indicator values to their respective default states
-
-        Args:
-            side (bool): 1 represents buy, 0 represents sell
         """
         self.has_upped_rsi = False
-        self.has_upped_mfi = False
-
-        if side == 'buy':  # only reset all indicators if we're closing a position
-            return
-        
-        self.buy_price = None
-        self.buy_time = None
-        self.position_high = None
+        self.has_upped_mfi = False        
+        self.position_high_price = None
         self.position_atr = None
+        self.position_enter_price = None
+        self.position_minutes = 0
     
     def calc_slope(self, indicator_vals):
         x_vals = numpy.array(range(0, len(indicator_vals)))
         y_vals = numpy.array(indicator_vals)
         slope, y_int = numpy.polyfit(x_vals, y_vals, 1)
         return slope
+
 
 def on_open(ws):
     print("\n### connection opened ###\n")
