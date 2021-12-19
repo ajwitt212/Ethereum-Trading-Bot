@@ -100,15 +100,15 @@ class Bot:
         self.macd_hists.append(macdhist)
         macdhist_slope = self.calc_slope(self.macd_hists)
         # comparing indicator values for inter-bar analysis
-        if bar_closed:
-            if self.lows[-1] < lower_bband:
-                self.min_since_dipped_lbband = 0 # if we just dipped set to 0
-            elif self.min_since_dipped_lbband >= 0:
-                self.min_since_dipped_lbband += 1 # if we've dipped before increase time
+        if self.lows[-1] < lower_bband:
+            self.min_since_dipped_lbband = 0 # if we just dipped set to 0
+        if self.highs[-1] > upper_bband: # if we just upped set to 0
+            self.min_since_upped_ubband = 0
 
-            if self.highs[-1] > upper_bband: # if we just upped set to 0
-                self.min_since_upped_ubband = 0
-            elif self.min_since_upped_ubband >= 0: # if we've upped before increase time
+        if bar_closed:
+            if self.min_since_dipped_lbband >= 0:
+                self.min_since_dipped_lbband += 1 # if we've dipped before increase time
+            if self.min_since_upped_ubband >= 0: # if we've upped before increase time
                 self.min_since_upped_ubband += 1
 
 
