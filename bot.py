@@ -59,7 +59,7 @@ class Bot:
         # calculates historical macds and adds them to attributes for slope calcs 
         np_closes = numpy.array(self.closes)
         macd_list, macdsignal_list, macdhist_list = talib.MACD(np_closes, fastperiod=12, slowperiod=26, signalperiod=9)
-        for i in range(-3, 0):
+        for i in range(-2, 0):
             macdhist = macdhist_list[i]
             self.macd_hists.append(macdhist)
         
@@ -88,10 +88,12 @@ class Bot:
         atr_list = talib.ATR(np_highs, np_lows, np_closes)
         atr = atr_list[-1]
         # getting mfi info
-        mfi = talib.MFI(np_highs, np_lows, np_closes, np_volumes, timeperiod=14)
-        mfi = mfi[-1]
+        mfi_list = talib.MFI(np_highs, np_lows, np_closes, np_volumes, timeperiod=14)
+        mfi = mfi_list[-1]
+        # getting ma info
+        ma_10_list = talib.MA(np_closes, timeperiod=10, matype=0)
+        ma_10 = ma_10_list[-1]
         # getting bbands info
-        # TODO: swinging too much with live data, works with historical data
         upper_bband_list, middle_bband_list, lower_bband_list = talib.BBANDS(np_closes, timeperiod=20, nbdevup=1.95, nbdevdn=1.95, matype=0)
         upper_bband, middle_bband, lower_bband = upper_bband_list[-1], middle_bband_list[-1], lower_bband_list[-1]
         # getting macd info
@@ -100,17 +102,16 @@ class Bot:
         self.macd_hists.append(macdhist)
         macdhist_slope = self.calc_slope(self.macd_hists)
         # comparing indicator values for inter-bar analysis
+        if self.lows[-1] < lower_bband:
+            self.min_since_dipped_lbband = 0 # if we just dipped set to 0
+        if self.highs[-1] > upper_bband: # if we just upped set to 0
+            self.min_since_upped_ubband = 0
+
         if bar_closed:
-            if self.lows[-1] < lower_bband:
-                self.min_since_dipped_lbband = 0 # if we just dipped set to 0
-            elif self.min_since_dipped_lbband >= 0:
+            if self.min_since_dipped_lbband >= 0:
                 self.min_since_dipped_lbband += 1 # if we've dipped before increase time
-
-            if self.highs[-1] > upper_bband: # if we just upped set to 0
-                self.min_since_upped_ubband = 0
-            elif self.min_since_upped_ubband >= 0: # if we've upped before increase time
+            if self.min_since_upped_ubband >= 0: # if we've upped before increase time
                 self.min_since_upped_ubband += 1
-
 
         if self.position_high_price != None: # if we are in position
             if bar_closed:
@@ -124,24 +125,26 @@ class Bot:
                 self.position_high_price = self.highs[-1]
             # checking sell conditions
 
-            if not (rsi < 50 and mfi < 50 and self.closes[-1] > lower_bband and self.min_since_dipped_lbband <= 7 and -3 <= macdhist <= 1.5 and macdhist_slope > -0.05): # not in a buy condition
+            if not (rsi < 50 and mfi < 50 and self.closes[-1] > ma_10 and self.min_since_dipped_lbband <= 7 and -3 <= macdhist <= 1.5 and macdhist_slope > -0.05): # not in a buy condition
                 if (
                 # Take Profit: rsi too high and came back down
                 (self.has_upped_rsi and rsi < 69) or  
                 # Take Profit: mfi too high and came back down
                 (self.has_upped_mfi and mfi < 79) or
                 # Stop Loss: avg price too low (relative)
-                (avg_price <= self.position_enter_price - 0.5*atr) or
-                # Take Profit: crossed ubband and is too low
-                (self.min_since_upped_ubband <= self.position_minutes and avg_price < upper_bband and avg_price <= self.position_high_price - .85*atr) or
-                # Take Profit: 2*atr and dropped ever so slightly
-                (self.position_high_price >= self.position_enter_price + 1.7*atr and self.closes[-1] < self.position_high_price - 0.5*atr)):
+                (avg_price <= self.position_enter_price - 1.85*atr) or
+                # Take Profit: went up but never crossed ubband or atr and then dipped buy not below enter price
+                (avg_price < self.position_high_price - 3*atr) or
+                # Take Profit: upped and dipped ubband and drop too low
+                (self.min_since_upped_ubband <= self.position_minutes and avg_price < upper_bband and avg_price <= self.position_high_price - atr) or
+                # Take Profit: upped and dipped 2*atr and dropped too low
+                (self.position_high_price >= self.position_enter_price + 2*atr and avg_price < self.position_enter_price + 2*atr and avg_price < self.position_high_price - atr)):
                     self.liquidate()
                     self.reset_position_trackers()
 
         else: # if we aren't in position
-            if rsi < 50 and mfi < 50 and self.closes[-1] > lower_bband and self.min_since_dipped_lbband <= 7 and -3 <= macdhist <= 1.5 and macdhist_slope > -0.05:
-                self.buy(quantity=.003)
+            if rsi < 50 and mfi < 50 and avg_price > ma_10 and self.min_since_dipped_lbband <= 7 and -1 <= macdhist <= 1.5 and macdhist_slope > -0.05:
+                self.buy(quantity=.009)
                 # updating position trackers
                 self.position_high_price = self.position_enter_price
 
@@ -161,6 +164,7 @@ class Bot:
         Args:
             quantity (float): quantity of crypto to buy
         """
+        ########################################################################
         # makes order
         order = self.client.order_market_buy(
                 symbol='ETHUSD',
@@ -169,12 +173,16 @@ class Bot:
         self.position_enter_price = float(order['fills'][0]['price'])
         print(f'- BOUGHT at price ({self.position_enter_price}) -')
         return order
+        ########################################################################
+        self.position_enter_price = self.closes[-1]
+        print(f'- BOUGHT at price ({self.position_enter_price}) at time ({datetime.datetime.now()}) -')
     
     def liquidate(self):
         """
         Calculates size of position and sells entire stake. 
         Truncates position size to decimal number binance server will take.
         """
+        ########################################################################
         # gets account information
         info = self.client.get_account()
         # calculates eth_pos, the truncated account position
@@ -194,7 +202,12 @@ class Bot:
         print(f'- SOLD at price ({sell_price}) for change of: ${money_diff} and {percentage_diff} -')
 
         return order
-    
+        ########################################################################
+        sell_price = self.closes[-1]
+        money_diff = sell_price - self.position_enter_price
+        percentage_diff = "{:.3%}".format(money_diff / sell_price)
+        print(f'- SOLD at price ({sell_price}) for change of: ${money_diff} and {percentage_diff} at time ({datetime.datetime.now()}) -')
+
     def append_bar(self, bar):
         """
         Appends most recent bar to the data structures in the class
