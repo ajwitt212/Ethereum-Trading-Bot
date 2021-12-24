@@ -23,6 +23,7 @@ class Bot:
         self.highs = deque()
         self.lows = deque()
         self.volumes = deque()
+        self.averages = deque()
         # track indicator values between bars
         self.min_since_upped_ubband = 100 # start high enough where its irrelevant
         self.min_since_dipped_lbband = 100 
@@ -45,7 +46,7 @@ class Bot:
         """
         # loads historical into variables so no delay when starting program
         for kline in self.client.get_historical_klines(
-            "ETHUSD", 
+            TICKER, 
             Client.KLINE_INTERVAL_1MINUTE, 
             str(datetime.datetime.utcnow() - datetime.timedelta(minutes=101)) # import 101 bc we pop most recent unclosed candle 
             ):
@@ -54,6 +55,8 @@ class Bot:
             self.highs.append(float(kline[2]))
             self.lows.append(float(kline[3]))
             self.volumes.append(float(kline[5]))
+            avg_price = (self.highs[-1] + self.lows[-1] + self.closes[-1]) / 3.0
+            self.averages.append(avg_price)
         # deletes most recent candle which isn't yet closed
         self.pop_newest_bar()
         # calculates historical macds and adds them to attributes for slope calcs 
@@ -81,6 +84,7 @@ class Bot:
         np_highs = numpy.array(self.highs)
         np_lows = numpy.array(self.lows)
         np_volumes = numpy.array(self.volumes)
+        np_averages = numpy.array(self.averages)
         # getting rsi info
         rsi_list = talib.RSI(np_closes, timeperiod=14)
         rsi = rsi_list[-1]
@@ -91,8 +95,8 @@ class Bot:
         mfi_list = talib.MFI(np_highs, np_lows, np_closes, np_volumes, timeperiod=14)
         mfi = mfi_list[-1]
         # getting ma info
-        ma_10_list = talib.MA(np_closes, timeperiod=10, matype=0)
-        ma_10 = ma_10_list[-1]
+        ma_12_list = talib.MA(np_averages, timeperiod=12, matype=0)
+        ma_12 = ma_12_list[-1]
         # getting bbands info
         upper_bband_list, middle_bband_list, lower_bband_list = talib.BBANDS(np_closes, timeperiod=20, nbdevup=1.95, nbdevdn=1.95, matype=0)
         upper_bband, middle_bband, lower_bband = upper_bband_list[-1], middle_bband_list[-1], lower_bband_list[-1]
@@ -124,27 +128,26 @@ class Bot:
             if self.position_high_price is not None and self.highs[-1] > self.position_high_price:
                 self.position_high_price = self.highs[-1]
             # checking sell conditions
-
-            if not (rsi < 50 and mfi < 50 and self.closes[-1] > ma_10 and self.min_since_dipped_lbband <= 7 and -3 <= macdhist <= 1.5 and macdhist_slope > -0.05): # not in a buy condition
+            if not (rsi < 50 and mfi < 50 and self.closes[-1] > ma_12 and self.min_since_dipped_lbband <= 7 and -1 <= macdhist <= 1.5 and macdhist_slope > -0.05): # not in a buy condition
                 if (
                 # Take Profit: rsi too high and came back down
                 (self.has_upped_rsi and rsi < 69) or  
                 # Take Profit: mfi too high and came back down
                 (self.has_upped_mfi and mfi < 79) or
+                # Stop Loss: Taking too long to go up, likely going to flatline or drop
+                (self.position_minutes > 5 and (avg_price < self.position_enter_price)) or
                 # Stop Loss: avg price too low (relative)
-                (avg_price <= self.position_enter_price - 1.85*atr) or
+                (avg_price <= self.position_enter_price - atr) or
                 # Take Profit: went up but never crossed ubband or atr and then dipped buy not below enter price
-                (avg_price < self.position_high_price - 3*atr) or
+                #(avg_price < self.position_high_price - 3.5*atr) or
                 # Take Profit: upped and dipped ubband and drop too low
-                (self.min_since_upped_ubband <= self.position_minutes and avg_price < upper_bband and avg_price <= self.position_high_price - atr) or
-                # Take Profit: upped and dipped 2*atr and dropped too low
-                (self.position_high_price >= self.position_enter_price + 2*atr and avg_price < self.position_enter_price + 2*atr and avg_price < self.position_high_price - atr)):
+                (self.min_since_upped_ubband <= self.position_minutes and avg_price < upper_bband and avg_price <= self.position_high_price - 1.25*atr)):
                     self.liquidate()
                     self.reset_position_trackers()
 
         else: # if we aren't in position
-            if rsi < 50 and mfi < 50 and avg_price > ma_10 and self.min_since_dipped_lbband <= 7 and -1 <= macdhist <= 1.5 and macdhist_slope > -0.05:
-                self.buy(quantity=.009)
+            if rsi < 50 and mfi < 50 and avg_price > ma_12 and self.min_since_dipped_lbband <= 7 and -1 <= macdhist <= 1.5 and macdhist_slope > -0.05:
+                self.buy(quantity=.0045)
                 # updating position trackers
                 self.position_high_price = self.position_enter_price
 
@@ -167,7 +170,7 @@ class Bot:
         ########################################################################
         # makes order
         order = self.client.order_market_buy(
-                symbol='ETHUSD',
+                symbol=TICKER,
                 quantity=quantity
             )
         self.position_enter_price = float(order['fills'][0]['price'])
@@ -185,15 +188,15 @@ class Bot:
         ########################################################################
         # gets account information
         info = self.client.get_account()
-        # calculates eth_pos, the truncated account position
-        eth_pos = (info['balances'][1]['free'])
-        num_decimals = len(eth_pos.split('.')[-1])
+        # calculates cur_position, the truncated account position
+        cur_position = (info['balances'][1]['free'])
+        num_decimals = len(cur_position.split('.')[-1])
         num_decimals_to_remove = (num_decimals - (num_decimals - 3))
-        eth_pos = float(eth_pos[:-1*num_decimals_to_remove])
+        cur_position = float(cur_position[:-1*num_decimals_to_remove])
         # makes order
         order = self.client.order_market_sell(
-                symbol='ETHUSD',
-                quantity=eth_pos
+                symbol=TICKER,
+                quantity=cur_position
         )
         
         sell_price = float(order['fills'][0]['price'])
@@ -220,6 +223,8 @@ class Bot:
         self.highs.append(float(bar['h']))
         self.lows.append(float(bar['l']))
         self.volumes.append(float(bar['v']))
+        avg_price = (self.highs[-1] + self.lows[-1] + self.closes[-1]) / 3.0
+        self.averages.append(avg_price)
     
     def pop_oldest_bar(self):
         """
@@ -230,6 +235,7 @@ class Bot:
         self.highs.popleft()
         self.lows.popleft()
         self.volumes.popleft()
+        self.averages.popleft()
     
     def pop_newest_bar(self):
         """
@@ -240,6 +246,7 @@ class Bot:
         self.highs.pop()
         self.lows.pop()
         self.volumes.pop()
+        self.averages.pop()
 
     def reset_position_trackers(self):
         """ 
@@ -268,10 +275,10 @@ def on_close(ws, close_status_code, close_msg):
     print("\n### connection closed ###")
     
 def on_message(ws, message):
-    global eth_bot
-    eth_bot.process_bar(json.loads(message)['k'])
+    global trading_bot
+    trading_bot.process_bar(json.loads(message)['k'])
 # declare bot object
-eth_bot = Bot()
+trading_bot = Bot()
 # runs websocket
 ws = websocket.WebSocketApp(
     BINANCE_SOCKET,
